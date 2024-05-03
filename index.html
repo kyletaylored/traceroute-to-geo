@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Route Map</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"
+    />
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-arc"></script>
+  </head>
+  <body>
+    <div id="map" style="width: 600px; height: 400px"></div>
+    <table id="mtrTable" border="1" style="width: 600px; margin-top: 20px">
+      <thead>
+        <tr>
+          <th>Step</th>
+          <th>IP</th>
+          <th>Hostname</th>
+          <th>City</th>
+          <th>Region</th>
+          <th>Country</th>
+          <th>Distance (km)</th>
+          <th>Average Time (ms)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Rows will be added here -->
+      </tbody>
+    </table>
+
+    <script>
+      /**
+       * Get IP data from /datastudio endpoint.
+       */
+      async function fetchIpData(ip) {
+        try {
+          const response = await fetch(`/datastudio?ip=${ip}`);
+
+          if (!response.ok) {
+            throw new Error("Network response was not ok");
+          }
+
+          const data = await response.json();
+          return data;
+        } catch (error) {
+          console.error("There was a problem:", error.message);
+          throw error;
+        }
+      }
+
+      async function mainFunction() {
+        let rawData = decodeURIComponent(
+          new URLSearchParams(window.location.search).get("data")
+        );
+        //   decode base64
+        rawData = atob(rawData);
+        let data = JSON.parse(rawData);
+        let locations = data.report.hubs;
+        console.log("locations", locations);
+
+        let map = L.map("map").setView([20, 0], 2); // Default view
+
+        // Used for markers and distance mapping
+        let existingMarkers = [];
+        let previousLatLng = null;
+
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19,
+        }).addTo(map);
+
+        /**
+         * Get a random color.
+         */
+        function getRandomColor() {
+          var letters = "0123456789ABCDEF";
+          var color = "#";
+          for (var i = 0; i < 6; i++) {
+            color += letters[Math.floor(Math.random() * 16)];
+          }
+          return color;
+        }
+
+        // Slightly offset overlapping markers
+        function adjustLatLng(latLng) {
+          let maxIterations = 10; // Limit iterations to avoid infinite loops
+          let adjusted = false;
+          let newLatLng = latLng.slice();
+
+          for (let i = 0; i < maxIterations; i++) {
+            for (let existing of existingMarkers) {
+              if (
+                Math.abs(existing[0] - newLatLng[0]) < 0.01 &&
+                Math.abs(existing[1] - newLatLng[1]) < 0.01
+              ) {
+                // Adjust by a small fraction
+                newLatLng[0] += 0.05;
+                newLatLng[1] += 0.05;
+                adjusted = true;
+              }
+            }
+            if (!adjusted) break; // No adjustment needed, break out of loop
+          }
+
+          existingMarkers.push(newLatLng);
+          return newLatLng;
+        }
+
+        function getDistanceBetweenPoints(latlng1, latlng2) {
+          let point1 = L.latLng(latlng1);
+          let point2 = L.latLng(latlng2);
+          return point1.distanceTo(point2) / 1000; // distance in kilometers
+        }
+
+        // Filter out locations without a loc value.
+        locations = locations.filter((location) => location?.loc);
+
+        // Loop thro
+        locations.forEach(function (location, index) {
+          const locColor = getRandomColor();
+          if (location?.loc) {
+            let locParts = location.loc.split(",");
+            let latLng = [parseFloat(locParts[0]), parseFloat(locParts[1])];
+            latLng = adjustLatLng(latLng); // Adjust the position if too close to another marker
+            let regionName = `${location?.city || "N/A"}, ${
+              location.region || "N/A"
+            }, ${location.country || "N/A"}`;
+
+            L.circleMarker(latLng, {
+              color: locColor,
+              fillColor: locColor,
+              fillOpacity: 1,
+              radius: 5,
+            })
+              .addTo(map)
+              .bindTooltip(
+                `Step: ${index + 1}<br>IP: ${location.ip}<br>Hostname: ${
+                  location.hostname || "N/A"
+                }<br>Location: ${regionName}`
+              )
+              .openTooltip();
+
+            // Calculate distance if not the first point
+            let distance = null;
+            if (previousLatLng) {
+              distance = getDistanceBetweenPoints(previousLatLng, latLng);
+            }
+            // Update previousLatLng for next iteration
+            previousLatLng = latLng;
+
+            // Add to table
+            let table = document
+              .getElementById("mtrTable")
+              .getElementsByTagName("tbody")[0];
+            let newRow = table.insertRow();
+
+            // Create a sequence of properties that you want to access from the location object
+            const sequence = [
+              "ip",
+              "hostname",
+              "city",
+              "region",
+              "country",
+              "Avg",
+            ];
+
+            // Go through properties, add to table.
+            sequence.forEach((property, seqIndex) => {
+              const cellIndex = seqIndex + 1;
+              if (seqIndex == 0) {
+                console.log();
+                newRow.insertCell(seqIndex).innerHTML = index;
+              }
+              let cellValue = location[property] || "N/A";
+              newRow.insertCell(cellIndex).innerHTML = cellValue;
+            });
+
+            // For the distance, you handle it separately since it has a different structure
+            newRow.insertCell(sequence.length).innerHTML = distance
+              ? distance.toFixed(2).toLocaleString()
+              : "N/A";
+
+            let prevLoc = locations[index - 1];
+            if (index > 0 && prevLoc?.loc) {
+              let previousLoc = locations[index - 1].loc.split(",");
+              let previousLatLng = [
+                parseFloat(previousLoc[0]),
+                parseFloat(previousLoc[1]),
+              ];
+
+              L.Polyline.Arc(previousLatLng, latLng, {
+                color: locColor,
+                weight: 2,
+                vertices: 200,
+              }).addTo(map);
+            }
+          }
+        });
+      }
+
+      // Run function
+      mainFunction();
+    </script>
+  </body>
+</html>
